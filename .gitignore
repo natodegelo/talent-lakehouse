@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.dbt/
+target/
+dbt_packages/
+logs/
+*.json
+!profiles_example.yml
