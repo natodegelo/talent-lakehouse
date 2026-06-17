@@ -1,0 +1,118 @@
+version: 2
+
+models:
+  - name: silver_candidates
+    description: "Candidatos normalizados e deduplicados da fonte PostgreSQL"
+    columns:
+      - name: candidate_id
+        description: "PK — UUID do candidato"
+        tests:
+          - not_null
+          - unique
+
+      - name: email_valid
+        description: "true se email contém @ e domínio válido"
+        tests:
+          - not_null
+
+      - name: state_normalized
+        description: "UF normalizada para 2 letras"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['SP', 'RJ', 'MG', 'BA', 'PR', 'RS', 'PE', 'CE', 'PA', 'GO']
+
+      - name: jobscore
+        description: "Score do perfil — NULL intencional para 5% dos candidatos"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              inclusive: true
+              where: "jobscore is not null"
+
+      - name: birth_date
+        tests:
+          - not_null
+
+      - name: created_at
+        tests:
+          - not_null
+
+      - name: updated_at
+        tests:
+          - not_null
+
+  - name: silver_jobs
+    description: "Vagas normalizadas e deduplicadas da fonte PostgreSQL"
+    columns:
+      - name: job_id
+        description: "PK — UUID da vaga"
+        tests:
+          - not_null
+          - unique
+
+      - name: job_type
+        description: "Tipo da vaga"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['aprendiz', 'estagio']
+
+      - name: status
+        description: "Status da vaga"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['open', 'closed', 'filled']
+
+      - name: state_normalized
+        description: "UF normalizada para 2 letras"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['SP', 'RJ', 'MG', 'BA', 'PR', 'RS', 'PE', 'CE', 'PA', 'GO']
+
+      - name: created_at
+        tests:
+          - not_null
+
+  - name: silver_processes
+    description: "Processos seletivos normalizados e deduplicados da fonte FastAPI"
+    columns:
+      - name: process_id
+        description: "PK — UUID do processo"
+        tests:
+          - not_null
+          - unique
+
+      - name: stage
+        description: "Etapa do processo seletivo"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['applied', 'screening', 'interview', 'approved', 'rejected']
+
+      - name: candidate_id
+        description: "FK → silver_candidates"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('silver_candidates')
+              field: candidate_id
+
+      - name: job_id
+        description: "FK → silver_jobs"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('silver_jobs')
+              field: job_id
+
+      - name: stage_date
+        tests:
+          - not_null
+
+      - name: created_at
+        tests:
+          - not_null

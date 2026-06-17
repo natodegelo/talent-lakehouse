@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+  - name: raw
+    database: talent-lakehouse-poc
+    schema: raw
+    tables:
+      - name: candidates
+      - name: jobs
+      - name: processes

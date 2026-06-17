@@ -1,0 +1,28 @@
+name: 'talent_lakehouse'
+version: '1.0.0'
+profile: 'talent_lakehouse'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  talent_lakehouse:
+    staging:
+      +materialized: view
+      +schema: silver
+
+    silver:
+      +materialized: table
+      +schema: silver
+
+    gold:
+      +materialized: table
+      +schema: gold
