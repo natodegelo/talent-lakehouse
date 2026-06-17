@@ -1,0 +1,13 @@
+talent_lakehouse:
+  outputs:
+    prod:
+      type: bigquery
+      method: oauth
+      project: talent-lakehouse-poc
+      dataset: silver
+      location: southamerica-east1
+      threads: 4
+      job_execution_timeout_seconds: 300
+      job_retries: 1
+      priority: interactive
+  target: prod

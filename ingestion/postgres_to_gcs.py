@@ -27,12 +27,8 @@ TABLES = ['candidates', 'jobs']
 
 
 def get_conn():
-    return psycopg.connect(
-        host=POSTGRES_HOST,
-        port=POSTGRES_PORT,
-        dbname=POSTGRES_DB,
-        user=POSTGRES_USER,
-    )
+    from ingestion.db_connect import get_postgres_conn
+    return get_postgres_conn()
 
 
 def load_checkpoint() -> dict:

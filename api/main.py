@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Query
 from dotenv import load_dotenv
-import psycopg
 import os
 from datetime import datetime
 
@@ -9,12 +8,8 @@ load_dotenv(encoding='utf-8')
 app = FastAPI(title="Talent Lakehouse API", version="1.0.0")
 
 def get_conn():
-    return psycopg.connect(
-        host=os.getenv('POSTGRES_HOST'),
-        port=os.getenv('POSTGRES_PORT'),
-        dbname=os.getenv('POSTGRES_DB'),
-        user=os.getenv('POSTGRES_USER'),
-    )
+    from ingestion.db_connect import get_postgres_conn
+    return get_postgres_conn()
 
 @app.get("/health")
 def health():

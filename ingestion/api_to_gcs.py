@@ -4,6 +4,7 @@ from google.cloud import storage
 from dotenv import load_dotenv
 import os
 import json
+import urllib.request
 from datetime import datetime, timezone
 import io
 
@@ -19,7 +20,7 @@ CHECKPOINT_FILE = 'ingestion/checkpoints/api_checkpoint.json'
 API_LIMIT = 10000
 
 # Cada arquivo Parquet no GCS agrupa N páginas da API.
-# 10 páginas × 10k = 100k registros por arquivo — equilibrio entre
+# 10 páginas × 10k = 100k registros por arquivo — equilíbrio entre
 # número de arquivos no GCS e memória usada por batch.
 PAGES_PER_FILE = 10
 
@@ -28,7 +29,6 @@ def load_checkpoint() -> dict:
     if os.path.exists(CHECKPOINT_FILE):
         with open(CHECKPOINT_FILE, 'r') as f:
             return json.load(f)
-    # last_created_at None = nunca rodou = full load
     return {
         'last_load_type': 'none',
         'processes': {'last_created_at': None},
@@ -41,17 +41,47 @@ def save_checkpoint(checkpoint: dict):
         json.dump(checkpoint, f, indent=2)
 
 
+def get_auth_headers() -> dict:
+    """
+    Retorna headers de autenticação para chamadas à API.
+
+    Local (INSTANCE_CONNECTION_NAME ausente): sem autenticação — API roda
+    exposta localmente sem token.
+
+    Cloud Run (INSTANCE_CONNECTION_NAME presente): busca identity token
+    no metadata server do GCP. Esse servidor está disponível dentro de
+    qualquer serviço/job do Cloud Run e retorna um token JWT assinado
+    pelo Google para autenticar chamadas entre serviços.
+
+    Por que metadata server e não gcloud CLI:
+      Dentro de um container no Cloud Run não há gcloud instalado.
+      O metadata server é a forma nativa e recomendada pelo GCP.
+    """
+    if not os.getenv('INSTANCE_CONNECTION_NAME'):
+        return {}
+    try:
+        req = urllib.request.Request(
+            'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity'
+            f'?audience={API_BASE}',
+            headers={'Metadata-Flavor': 'Google'}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            token = resp.read().decode()
+        return {'Authorization': f'Bearer {token}'}
+    except Exception as e:
+        print(f"  [WARN] Não foi possível obter identity token: {e}")
+        return {}
+
+
 def upload_to_gcs(records: list, dt: datetime, part: int) -> str:
     """
     Converte lista de dicts para DataFrame, normaliza tipos e salva Parquet no GCS.
 
-    A API já devolve strings ISO para stage_date e created_at — não precisamos
-    de conversão de timestamp aqui. UUIDs já vêm como string. Nada de Decimal.
-    O Parquet de processes é o mais simples dos três.
+    A API já devolve strings ISO para stage_date e created_at.
+    UUIDs já vêm como string. Nada de Decimal.
     """
     df = pd.DataFrame(records)
 
-    # Garante que todos os campos estão como STRING (a API pode devolver None)
     for col in ['process_id', 'candidate_id', 'job_id', 'stage', 'stage_date', 'created_at']:
         if col in df.columns:
             df[col] = df[col].astype(str).where(df[col].notna(), None)
@@ -78,13 +108,18 @@ def upload_to_gcs(records: list, dt: datetime, part: int) -> str:
 def fetch_page(offset: int, since: str | None) -> list:
     """
     Faz uma chamada ao endpoint /processes e retorna os registros.
-    since é passado apenas no modo incremental.
+    Inclui header de autenticação quando rodando no GCP.
     """
     params = {'limit': API_LIMIT, 'offset': offset}
     if since:
         params['since'] = since
 
-    resp = requests.get(f"{API_BASE}/processes", params=params, timeout=30)
+    resp = requests.get(
+        f"{API_BASE}/processes",
+        params=params,
+        headers=get_auth_headers(),
+        timeout=30
+    )
     resp.raise_for_status()
     return resp.json()['data']
 
@@ -113,12 +148,10 @@ def full_load(checkpoint: dict, dt: datetime) -> str | None:
         offset += len(records)
         total += len(records)
 
-        # Atualiza max_created_at com o maior valor do batch
         batch_max = max(r['created_at'] for r in records if r['created_at'])
         if max_created_at is None or batch_max > max_created_at:
             max_created_at = batch_max
 
-        # A cada PAGES_PER_FILE páginas, salva um arquivo e limpa o buffer
         if len(buffer) >= API_LIMIT * PAGES_PER_FILE:
             upload_to_gcs(buffer, dt, part)
             part += 1
@@ -126,10 +159,8 @@ def full_load(checkpoint: dict, dt: datetime) -> str | None:
             print(f"    {total:,} registros extraídos...")
 
         if len(records) < API_LIMIT:
-            # Última página — menos registros que o limit = fim dos dados
             break
 
-    # Salva o restante que ficou no buffer
     if buffer:
         upload_to_gcs(buffer, dt, part)
         print(f"    {total:,} registros extraídos...")
@@ -141,8 +172,7 @@ def full_load(checkpoint: dict, dt: datetime) -> str | None:
 def incremental_load(checkpoint: dict, dt: datetime) -> str | None:
     """
     Usa o parâmetro since para buscar apenas registros novos.
-    Pagina até esgotar — no incremental o volume é pequeno (novos desde última execução).
-    Salva tudo em um único arquivo Parquet.
+    Pagina até esgotar — no incremental o volume é pequeno.
     """
     since = checkpoint['processes']['last_created_at']
     print(f"\n  [INCREMENTAL] processes desde {since}")
