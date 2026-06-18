@@ -1,24 +1,20 @@
 import os
-import json
+import sys
 from datetime import datetime, timezone
 from google.cloud import bigquery, storage
 from dotenv import load_dotenv
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from ingestion.checkpoint import load_checkpoint as gcs_load_checkpoint
+from ingestion.checkpoint import save_checkpoint as gcs_save_checkpoint
+
 load_dotenv(encoding='utf-8')
 
-PROJECT       = os.getenv('GCP_PROJECT')
-BUCKET_RAW    = os.getenv('GCS_BUCKET_RAW')
+PROJECT        = os.getenv('GCP_PROJECT')
+BUCKET_RAW     = os.getenv('GCS_BUCKET_RAW')
 BQ_DATASET_RAW = os.getenv('BQ_DATASET_RAW', 'raw')
 
-CHECKPOINT_FILE = 'ingestion/checkpoints/gcs_to_bq_checkpoint.json'
-
-# ---------------------------------------------------------------------------
-# Schemas — princípio da raw:
-#   Tudo STRING, exceto:
-#   - FLOAT:   jobscore e salary (NULLs no Pandas → float64 no Parquet)
-#   - BOOLEAN: profile_complete (sem ambiguidade)
-#   Casts para DATE/TIMESTAMP/INT acontecem na silver via dbt.
-# ---------------------------------------------------------------------------
 SCHEMAS = {
     'candidates': [
         bigquery.SchemaField('candidate_id',    'STRING',  mode='NULLABLE'),
@@ -58,54 +54,26 @@ SCHEMAS = {
 
 
 def load_checkpoint() -> dict:
-    if os.path.exists(CHECKPOINT_FILE):
-        with open(CHECKPOINT_FILE, 'r') as f:
-            return json.load(f)
-    return {table: {'last_file': None, 'load_type': 'none'} for table in SCHEMAS}
+    data = gcs_load_checkpoint('gcs_to_bq_checkpoint.json')
+    if data:
+        return data
+    return {table: {'last_file': None} for table in SCHEMAS}
 
 
 def save_checkpoint(checkpoint: dict):
-    os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
-    with open(CHECKPOINT_FILE, 'w') as f:
-        json.dump(checkpoint, f, indent=2)
+    gcs_save_checkpoint('gcs_to_bq_checkpoint.json', checkpoint)
 
 
 def list_new_blobs(storage_client, table: str, last_file: str | None) -> list:
-    """
-    Lista arquivos Parquet do GCS para a tabela, ordenados por nome.
-    Filtra apenas os arquivos posteriores ao último carregado.
-
-    O nome do arquivo tem timestamp embutido (table_YYYYMMDD_HHMMSS_part_NNNN.parquet),
-    então ordenação lexicográfica equivale a ordenação cronológica.
-    """
     blobs = list(storage_client.list_blobs(BUCKET_RAW, prefix=f"{table}/"))
     blobs = [b for b in blobs if b.name.endswith('.parquet')]
     blobs.sort(key=lambda b: b.name)
-
     if last_file:
         blobs = [b for b in blobs if b.name > last_file]
-
     return blobs
 
 
-def load_blob_to_bq(
-    bq_client,
-    blob,
-    table: str,
-    write_disposition: bigquery.WriteDisposition,
-) -> int:
-    """
-    Carrega um arquivo Parquet do GCS para o BigQuery.
-
-    write_disposition define o comportamento:
-      - WRITE_TRUNCATE: limpa a tabela antes de inserir (usado no primeiro arquivo
-                        do full load para garantir idempotência — se o pipeline
-                        morrer e for reexecutado, não duplica dados)
-      - WRITE_APPEND:   adiciona registros sem apagar (todos os demais arquivos)
-
-    A deduplicação por PK (candidate_id, job_id, process_id) é responsabilidade
-    da camada silver via dbt — QUALIFY ROW_NUMBER() OVER (PARTITION BY pk ORDER BY updated_at DESC) = 1
-    """
+def load_blob_to_bq(bq_client, blob, table: str, write_disposition) -> int:
     table_ref = f"{PROJECT}.{BQ_DATASET_RAW}.{table}"
     uri = f"gs://{blob.bucket.name}/{blob.name}"
 
@@ -137,17 +105,11 @@ def run():
     for table in SCHEMAS:
         print(f"\nProcessando tabela: {table}")
 
-        last_file = checkpoint[table].get('last_file')
-
-        # Modo determinado por tabela, não globalmente.
-        # Se last_file é None, a tabela nunca foi carregada → full load.
-        # O primeiro arquivo usa WRITE_TRUNCATE para garantir idempotência:
-        # se o pipeline for reexecutado após falha parcial, não duplica.
-        # Se last_file existe, tabela já tem baseline → incremental, sempre APPEND.
+        last_file     = checkpoint[table].get('last_file')
         is_first_load = last_file is None
 
         if is_first_load:
-            print(f"  MODO: FULL LOAD (primeira carga) — primeiro arquivo usa TRUNCATE")
+            print(f"  MODO: FULL LOAD — primeiro arquivo usa TRUNCATE")
         else:
             print(f"  MODO: INCREMENTAL — todos os arquivos usam APPEND")
 
@@ -160,15 +122,15 @@ def run():
         print(f"  {len(blobs)} arquivo(s) encontrado(s)")
 
         for i, blob in enumerate(blobs):
-            if is_first_load and i == 0:
-                disposition = bigquery.WriteDisposition.WRITE_TRUNCATE
-            else:
-                disposition = bigquery.WriteDisposition.WRITE_APPEND
+            disposition = (
+                bigquery.WriteDisposition.WRITE_TRUNCATE
+                if is_first_load and i == 0
+                else bigquery.WriteDisposition.WRITE_APPEND
+            )
 
             rows = load_blob_to_bq(bq_client, blob, table, disposition)
             total_loaded += rows
 
-            # Checkpoint salvo após cada arquivo — retomada segura em caso de falha
             checkpoint[table]['last_file'] = blob.name
             save_checkpoint(checkpoint)
 

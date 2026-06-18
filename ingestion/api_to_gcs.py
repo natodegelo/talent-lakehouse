@@ -3,10 +3,16 @@ import pandas as pd
 from google.cloud import storage
 from dotenv import load_dotenv
 import os
+import sys
 import json
 import urllib.request
 from datetime import datetime, timezone
 import io
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from ingestion.checkpoint import load_checkpoint as gcs_load_checkpoint
+from ingestion.checkpoint import save_checkpoint as gcs_save_checkpoint
 
 load_dotenv(encoding='utf-8')
 
@@ -14,21 +20,14 @@ PROJECT    = os.getenv('GCP_PROJECT')
 BUCKET_RAW = os.getenv('GCS_BUCKET_RAW')
 API_BASE   = os.getenv('API_BASE_URL', 'http://localhost:8000')
 
-CHECKPOINT_FILE = 'ingestion/checkpoints/api_checkpoint.json'
-
-# Máximo aceito pelo endpoint /processes
-API_LIMIT = 10000
-
-# Cada arquivo Parquet no GCS agrupa N páginas da API.
-# 10 páginas × 10k = 100k registros por arquivo — equilíbrio entre
-# número de arquivos no GCS e memória usada por batch.
+API_LIMIT    = 10000
 PAGES_PER_FILE = 10
 
 
 def load_checkpoint() -> dict:
-    if os.path.exists(CHECKPOINT_FILE):
-        with open(CHECKPOINT_FILE, 'r') as f:
-            return json.load(f)
+    data = gcs_load_checkpoint('api_checkpoint.json')
+    if data:
+        return data
     return {
         'last_load_type': 'none',
         'processes': {'last_created_at': None},
@@ -36,27 +35,10 @@ def load_checkpoint() -> dict:
 
 
 def save_checkpoint(checkpoint: dict):
-    os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
-    with open(CHECKPOINT_FILE, 'w') as f:
-        json.dump(checkpoint, f, indent=2)
+    gcs_save_checkpoint('api_checkpoint.json', checkpoint)
 
 
 def get_auth_headers() -> dict:
-    """
-    Retorna headers de autenticação para chamadas à API.
-
-    Local (INSTANCE_CONNECTION_NAME ausente): sem autenticação — API roda
-    exposta localmente sem token.
-
-    Cloud Run (INSTANCE_CONNECTION_NAME presente): busca identity token
-    no metadata server do GCP. Esse servidor está disponível dentro de
-    qualquer serviço/job do Cloud Run e retorna um token JWT assinado
-    pelo Google para autenticar chamadas entre serviços.
-
-    Por que metadata server e não gcloud CLI:
-      Dentro de um container no Cloud Run não há gcloud instalado.
-      O metadata server é a forma nativa e recomendada pelo GCP.
-    """
     if not os.getenv('INSTANCE_CONNECTION_NAME'):
         return {}
     try:
@@ -74,12 +56,6 @@ def get_auth_headers() -> dict:
 
 
 def upload_to_gcs(records: list, dt: datetime, part: int) -> str:
-    """
-    Converte lista de dicts para DataFrame, normaliza tipos e salva Parquet no GCS.
-
-    A API já devolve strings ISO para stage_date e created_at.
-    UUIDs já vêm como string. Nada de Decimal.
-    """
     df = pd.DataFrame(records)
 
     for col in ['process_id', 'candidate_id', 'job_id', 'stage', 'stage_date', 'created_at']:
@@ -106,10 +82,6 @@ def upload_to_gcs(records: list, dt: datetime, part: int) -> str:
 
 
 def fetch_page(offset: int, since: str | None) -> list:
-    """
-    Faz uma chamada ao endpoint /processes e retorna os registros.
-    Inclui header de autenticação quando rodando no GCP.
-    """
     params = {'limit': API_LIMIT, 'offset': offset}
     if since:
         params['since'] = since
@@ -125,11 +97,6 @@ def fetch_page(offset: int, since: str | None) -> list:
 
 
 def full_load(checkpoint: dict, dt: datetime) -> str | None:
-    """
-    Pagina a API do offset 0 até esgotar os registros.
-    Agrupa PAGES_PER_FILE páginas em um único arquivo Parquet.
-    Retorna o max(created_at) encontrado para o checkpoint.
-    """
     print("\n  [FULL LOAD] processes")
 
     max_created_at = None
@@ -170,10 +137,6 @@ def full_load(checkpoint: dict, dt: datetime) -> str | None:
 
 
 def incremental_load(checkpoint: dict, dt: datetime) -> str | None:
-    """
-    Usa o parâmetro since para buscar apenas registros novos.
-    Pagina até esgotar — no incremental o volume é pequeno.
-    """
     since = checkpoint['processes']['last_created_at']
     print(f"\n  [INCREMENTAL] processes desde {since}")
 
