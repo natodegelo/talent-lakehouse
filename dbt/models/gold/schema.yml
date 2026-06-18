@@ -1,0 +1,83 @@
+version: 2
+
+models:
+  - name: candidates_by_region
+    description: "Total de candidatos por estado normalizado com métricas de qualidade de perfil"
+    columns:
+      - name: state
+        description: "UF normalizada"
+        tests:
+          - not_null
+          - unique
+      - name: total_candidates
+        description: "Total de candidatos no estado"
+        tests:
+          - not_null
+      - name: profile_completion_pct
+        description: "Percentual de candidatos com perfil completo"
+        tests:
+          - not_null
+      - name: avg_jobscore
+        description: "JobScore médio dos candidatos no estado"
+
+  - name: jobs_by_region
+    description: "Total de vagas por estado com breakdown por tipo e status"
+    columns:
+      - name: state
+        description: "UF normalizada"
+        tests:
+          - not_null
+          - unique
+      - name: total_jobs
+        description: "Total de vagas no estado"
+        tests:
+          - not_null
+
+  - name: funnel_by_stage
+    description: "Funil de conversão do processo seletivo por etapa"
+    columns:
+      - name: stage
+        description: "Etapa do processo seletivo"
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              values: ['applied', 'screening', 'interview', 'approved', 'rejected']
+      - name: total_processes
+        description: "Total de processos que chegaram nessa etapa"
+        tests:
+          - not_null
+      - name: pct_of_applied
+        description: "Percentual em relação ao total de candidaturas"
+        tests:
+          - not_null
+
+  - name: time_to_hire
+    description: "Tempo médio em dias entre candidatura e aprovação"
+    columns:
+      - name: avg_days_to_hire
+        description: "Média de dias para contratar"
+        tests:
+          - not_null
+      - name: total_hired
+        description: "Total de contratações no período"
+        tests:
+          - not_null
+
+  - name: jobscore_distribution
+    description: "Distribuição de JobScore por faixa e estado"
+    columns:
+      - name: state
+        description: "UF normalizada"
+        tests:
+          - not_null
+      - name: score_range
+        description: "Faixa de JobScore"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['0-20', '21-40', '41-60', '61-80', '81-100', 'sem score']
+      - name: total
+        description: "Total de candidatos na faixa"
+        tests:
+          - not_null
